@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+osmnx
+pymongo
+python-dotenv
+networkx
