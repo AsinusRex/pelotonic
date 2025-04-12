@@ -1,35 +1,35 @@
-import logging.config  # <-- needed to use dictConfig
+import logging
+import logging.config
 import uvicorn
-from db import db
-from api.server import app
-from config.config import load_config
+import config
+import db
+from db import connect, close, area_data
+from api import create_app
 
-def init_app():
-    # Load your custom config
-    config = load_config()
+def startup():
+    # Set up logging and initialize resources.
+    logging.config.dictConfig(config.LOGGING_CONFIG)
+    logger = logging.getLogger(__name__)
+    logger.info("Starting up application resources.")
+    try:
+        connect()
+        logger.info("Database connection established.")
+        db.initialize_indexes()
+        logger.info("Database indexes created successfully.")
+    except Exception as e:
+        logger.error("Startup failed.", exc_info=e)
+        raise e
 
-    # Apply logging configuration
-    logging.config.dictConfig(config["LOGGING_CONFIG"])
-
-    logging.info("Initializing app...")
-    database = db.connect(config.get("MONGO_URI"), config.get("DB_NAME"))
-
-    if database is None:
-        logging.error("MongoDB connection failed during initialization.")
-        raise Exception("MongoDB connection failed.")
-
-    # Store the db instance in the app state
-    app.state.db = database
-
-    logging.info("Starting API server at %s:%d", config.get("API_HOST"), config.get("API_PORT"))
-
-    # Run Uvicorn with your custom logging configuration
-    uvicorn.run(
-        app,
-        host=config.get("API_HOST"),
-        port=config.get("API_PORT"),
-        log_config=config["LOGGING_CONFIG"]
-    )
+def shutdown():
+    # Execute shutdown routines, such as closing the db connection.
+    logger = logging.getLogger(__name__)
+    logger.info("Shutting down. Cleaning up resources.")
+    close()
 
 if __name__ == "__main__":
-    init_app()
+    try:
+        startup()
+        app = create_app()
+        uvicorn.run(app, host=config.API_HOST, port=config.API_PORT)
+    finally:
+        shutdown()

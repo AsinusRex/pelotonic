@@ -1,43 +1,55 @@
+# Language: python
+from fastapi import APIRouter, HTTPException, Query
 import logging
-from db import db
-from config.config import load_config
-from osm import osm
+import db.area_data as area_data
+import optimization
+import route
 
-def orchestrate_request(origin_lat, origin_lon, dest_lat, dest_lon, user_id):
-    """Orchestrates the route request flow"""
-    config = load_config()
-    database = db.connect(
-        config.get("MONGO_URI"),
-        config.get("DB_NAME")
-    )
-    if database is None:
-        logging.error("Database connection failed in orchestration.")
-        return {"error": "Database connection failed."}
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-    user_props = db.get_user(database, user_id)
-    if not user_props:
-        logging.error("User data not found for user ID: %s", user_id)
-        return {"error": "User data not found."}
+router = APIRouter()
 
-    # Add buffer around the bounding box (approximately 500 meters)
-    buffer = 0.005  # rough approximation in degrees
-    bbox = {
-        "min_lat": min(origin_lat, dest_lat) - buffer,
-        "max_lat": max(origin_lat, dest_lat) + buffer,
-        "min_lon": min(origin_lon, dest_lon) - buffer,
-        "max_lon": max(origin_lon, dest_lon) + buffer
-    }
+@router.get("/route")
+def get_route(
+        origin_lat: float = Query(...),
+        origin_lon: float = Query(...),
+        dest_lat: float = Query(...),
+        dest_lon: float = Query(...),
+        user_id: str = Query(...)
+):
+    """
+    Handles a client's route request using query parameters.
+    """
+    origin = {"lat": origin_lat, "lon": origin_lon}
+    destination = {"lat": dest_lat, "lon": dest_lon}
+    logger.info(f"Step 1: Received origin {origin} and destination {destination}.")
 
-    # Check and fetch data if needed
-    complete = db.check_in_db(database, bbox)
-    if not complete:
-        logging.info("Fetching OSM data for bounding box")
-        g = osm.fetch([bbox])
-        if isinstance(g, str):
-            return {"error": g}
-        if g is not None:
-            nodes, edges = osm.process(g)
-            db.write_graph_to_db(database, nodes, edges)
+    tile_ids = area_data.connect(origin, destination)
+    logger.info(f"Step 2: Connected tiles calculated: {tile_ids}")
 
-    # TODO: Next step - implement routing using the data
-    return 'OK'
+    existing_tiles = area_data.check(tile_ids)
+    logger.info(f"Step 3: Existing tiles in the database: {existing_tiles}")
+
+    missing_tiles = [tile for tile in tile_ids if tile not in existing_tiles]
+    logger.info(f"Step 4: Missing tiles that need data loading: {missing_tiles}")
+    for tile in missing_tiles:
+        area_data.load_osm(tile)
+        logger.info(f"Loaded OSM data for tile {tile}")
+        area_data.load_traffic(tile)
+        logger.info(f"Loaded traffic data for tile {tile}")
+        area_data.load_weather(tile)
+        logger.info(f"Loaded weather data for tile {tile}")
+
+    tiles_data = tile_ids
+    logger.info(f"Step 5: Tile data prepared for updating: {tiles_data}")
+
+    # For example, you can add extra data to simulate the request body
+    request_data = {"user_id": user_id}
+    weights = optimization.calculate_weights(tiles_data, request_data)
+    logger.info("Step 6: Edge weights updated.")
+
+    final_route = route.plot(tiles_data, weights)
+    logger.info(f"Step 7: Final route calculated: {final_route}")
+
+    return {"route": final_route}
